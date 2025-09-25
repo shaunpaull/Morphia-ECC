@@ -1,0 +1,71 @@
+import math
+import random
+from typing import List
+
+def b(d: int) -> int:
+    return math.floor(math.log2(d)) + 1 if d > 1 else 1
+
+def m(d: int) -> int:
+    return math.floor(math.sqrt(d)) + 1 if d > 1 else 2
+
+def gcd(a: int, b: int) -> int:
+    while b:
+        a, b = b, a % b
+    return a
+
+class MorphicECC:
+    def __init__(self, seed_d: int, stages: int = 3):
+        self.seed_d = seed_d
+        self.stages = stages
+        self.params = [(b(seed_d + i*100), m(seed_d + i*100)) for i in range(stages)]  # Dynamic per stage
+
+    def encode(self, data: List[int]) -> List[int]:
+        """Encode: Pipeline data through stages, add 'parity' via compressive basin if gcd>1."""
+        encoded = data[:]
+        for i, (bi, mi) in enumerate(self.params):
+            # Stage multiply + mod
+            stage_out = [(bi * x) % mi for x in encoded]
+            g = gcd(bi, mi)
+            if g > 1:  # Compressive: Basin for redundancy (duplicate folded bits)
+                folded = [x // g for x in stage_out]  # Simple parity embed
+                stage_out.extend(folded)
+            encoded = stage_out
+        return encoded
+
+    def decode(self, noisy_encoded: List[int]) -> List[int]:
+        """Decode: Reverse stages, recover via monotone/inverse if possible."""
+        decoded = noisy_encoded[:]
+        for i in reversed(range(self.stages)):
+            bi, mi = self.params[i]
+            g = gcd(bi, mi)
+            if g > 1:  # Unfold parity (assume even len)
+                half = len(decoded) // 2
+                folded = decoded[half:]  # Extract parity
+                decoded = decoded[:half]
+                # Simple check: Match folded to unfolded
+                for j in range(len(decoded)):
+                    if folded[j % len(folded)] != (decoded[j] // g):
+                        decoded[j] = (decoded[j] // g) * g  # Correct via parity
+            # Inverse: Assume monotone (m_i approx equal), recover t_{i-1} = inv_bi * t_i % m_{i-1} (approx m_i)
+            m_prev = self.params[i-1][1] if i > 0 else m(self.seed_d)
+            inv_bi = pow(bi, -1, mi) if g == 1 else 1  # Fallback if not coprime
+            decoded = [(inv_bi * x) % m_prev for x in decoded]
+        return [x % len(data) for x in decoded[:len(data)]]  # Trim to original len
+
+# Test: Generate payload, add noise, encode/decode
+payload = [random.randint(0, 255) for _ in range(100)]  # 100-byte payload
+ecc = MorphicECC(seed_d=10000, stages=3)
+encoded = ecc.encode(payload)
+noise_level = 0.2  # 20% flip
+noisy = encoded[:]
+for i in range(len(noisy)):
+    if random.random() < noise_level:
+        noisy[i] = (noisy[i] + random.randint(-50, 50)) % max(1, ecc.params[-1][1])
+decoded = ecc.decode(noisy)
+errors = sum(a != b for a, b in zip(payload, decoded))
+success_rate = 1 - (errors / len(payload))
+print(f"Payload len: {len(payload)}")
+print(f"Success rate: {success_rate:.2%}")
+print(f"Errors: {errors}")
+print(f"Sample original: {payload[:5]}")
+print(f"Sample decoded: {decoded[:5]}")
